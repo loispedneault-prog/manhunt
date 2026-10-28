@@ -366,3 +366,7 @@ textarea.input { font-size: 16px; line-height: 1.35; padding: 8px 10px; resize: 
 .ch-actions { display: flex; flex-direction: column; gap: 4px; }
 .hud-mid .zone-t { color: var(--amber); }
 .btn.qr-btn { border-color: var(--red); color: #fff; }
+.lobby-qr { align-self: center; background: #fff; padding: 8px; margin: 4px 0; }
+.lobby-qr .qr { width: min(220px, 60vw); height: auto; }
+.code-box .btn { align-self: center; margin-top: 4px; }
+.code-box .code { font-size: 40px; }

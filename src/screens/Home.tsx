@@ -1,9 +1,18 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Avatar, Logo } from '../components/ui'
 import type { Profile } from '../lib/profile'
 import { ensurePlayer, sb } from '../lib/supabase'
 
 const initialCode = (new URLSearchParams(location.search).get('join') ?? '').toUpperCase().slice(0, 5)
+// Opening a scanned lobby QR (?join=CODE) joins once; leaving the game later must not re-join.
+let autoJoinPending = initialCode.length === 5
+
+function dropJoinParam() {
+  const url = new URL(location.href)
+  if (!url.searchParams.has('join')) return
+  url.searchParams.delete('join')
+  history.replaceState(null, '', url.pathname + url.search + url.hash)
+}
 
 export function Home({
   profile, notice, onEditProfile, onCreate, onJoined,
@@ -11,6 +20,14 @@ export function Home({
   const [code, setCode] = useState(initialCode)
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState(notice ?? '')
+
+  useEffect(() => {
+    if (!autoJoinPending) return
+    autoJoinPending = false
+    dropJoinParam()
+    void join()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   const join = async () => {
     const c = code.trim().toUpperCase()

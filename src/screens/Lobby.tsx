@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { QrCode } from '../components/QrCode'
 import { Avatar, Logo } from '../components/ui'
 import { startRecording, unlockAudio } from '../lib/audio'
 import type { Profile } from '../lib/profile'
@@ -60,8 +61,10 @@ export function Lobby({ game, players, profile, onLeave }: { game: Game; players
     onLeave()
   }
 
+  const joinUrl = `${location.origin}${location.pathname}?join=${game.code}`
+
   const share = async () => {
-    const url = `${location.origin}${location.pathname}?join=${game.code}`
+    const url = joinUrl
     try {
       if (navigator.share) await navigator.share({ title: 'MAN HUNT', text: `Rejoins la chasse : code ${game.code}`, url })
       else {
@@ -97,10 +100,14 @@ export function Lobby({ game, players, profile, onLeave }: { game: Game; players
   return (
     <div className="screen lobby">
       <Logo small />
-      <div className="code-box" onClick={share}>
-        <span className="field-label">Code de la partie</span>
+      <div className="code-box">
+        <span className="field-label">Scanne pour rejoindre</span>
+        <div className="lobby-qr">
+          <QrCode text={joinUrl} size={220} />
+        </div>
+        <small>Ouvre l’appareil photo et vise le code : l’app s’ouvre et rejoint la partie.</small>
         <b className="code">{game.code}</b>
-        <small>Touche pour partager</small>
+        <button className="btn sm" onClick={share}>Partager le lien</button>
       </div>
 
       <div className="panel">
