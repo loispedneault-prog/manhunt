@@ -1,4 +1,4 @@
-import type { LatLng, Prison } from './types'
+import type { LatLng } from './types'
 
 export function distM(aLat: number, aLng: number, bLat: number, bLng: number): number {
   const R = 6371000
@@ -38,6 +38,26 @@ export function zoneAreaM2(zone: LatLng[]): number {
   return Math.abs(a / 2)
 }
 
+/**
+ * Moves every vertex toward the zone's center by `meters`, never closer than 25 m to it.
+ * Same math as public.shrink_zone on the server (used here only to preview the next zone).
+ */
+export function shrinkZone(base: LatLng[], meters: number): LatLng[] {
+  if (base.length < 3 || meters <= 0) return base
+  const clat = base.reduce((s, p) => s + p[0], 0) / base.length
+  const clng = base.reduce((s, p) => s + p[1], 0) / base.length
+  const kx = 111320 * Math.cos((clat * Math.PI) / 180)
+  const ky = 110540
+  return base.map(([lat, lng]) => {
+    const dx = (lng - clng) * kx
+    const dy = (lat - clat) * ky
+    const d = Math.hypot(dx, dy)
+    if (d === 0) return [lat, lng] as LatLng
+    const nd = Math.max(Math.min(d, 25), d - meters)
+    return [clat + (dy * (nd / d)) / ky, clng + (dx * (nd / d)) / kx] as LatLng
+  })
+}
+
 /** Distance in meters from a point to the zone's border. */
 function distToEdge(zone: LatLng[], lat: number, lng: number): number {
   const kx = 111320 * Math.cos((lat * Math.PI) / 180)
@@ -54,10 +74,10 @@ function distToEdge(zone: LatLng[], lat: number, lng: number): number {
 }
 
 /**
- * Picks `n` points inside the zone that are as far from each other (and from the prison) as possible,
+ * Picks `n` points inside the zone that are as far from each other as possible,
  * while staying off the border: random candidates, then greedy farthest-point selection.
  */
-export function spreadPoints(zone: LatLng[], prison: Prison | null, n: number): LatLng[] {
+export function spreadPoints(zone: LatLng[], n: number): LatLng[] {
   if (zone.length < 3 || n <= 0) return []
   const lats = zone.map(p => p[0])
   const lngs = zone.map(p => p[1])
@@ -68,7 +88,6 @@ export function spreadPoints(zone: LatLng[], prison: Prison | null, n: number): 
     const lat = minLat + Math.random() * (maxLat - minLat)
     const lng = minLng + Math.random() * (maxLng - minLng)
     if (!inZone(zone, lat, lng)) continue
-    if (prison && distM(lat, lng, prison.lat, prison.lng) < prison.radius + 60) continue
     const edge = distToEdge(zone, lat, lng)
     if (edge < 20) continue
     candidates.push({ p: [lat, lng], edge })
@@ -78,7 +97,6 @@ export function spreadPoints(zone: LatLng[], prison: Prison | null, n: number): 
   const score = (c: { p: LatLng; edge: number }, chosen: LatLng[]) => {
     let d = c.edge * 2.5
     for (const q of chosen) d = Math.min(d, distM(c.p[0], c.p[1], q[0], q[1]))
-    if (prison) d = Math.min(d, distM(c.p[0], c.p[1], prison.lat, prison.lng) * 1.2)
     return d
   }
   const chosen: LatLng[] = []

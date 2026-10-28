@@ -3,7 +3,7 @@ import { Avatar, Logo } from '../components/ui'
 import { startRecording, unlockAudio } from '../lib/audio'
 import type { Profile } from '../lib/profile'
 import { rpc, sb } from '../lib/supabase'
-import type { Game, Player } from '../lib/types'
+import { REVEAL_S, type Game, type Player } from '../lib/types'
 
 export function Lobby({ game, players, profile, onLeave }: { game: Game; players: Player[]; profile: Profile; onLeave: () => void }) {
   const isHost = game.host_id === profile.id
@@ -153,7 +153,9 @@ export function Lobby({ game, players, profile, onLeave }: { game: Game; players
           <li>{c.duration_min} min de partie · {c.headstart_min} min d’avance pour les fugitifs</li>
           <li>Ping de tout le monde toutes les {c.ping_min} min</li>
           <li>Hors zone = position visible en direct</li>
-          <li>Prison : {c.jail_min} min pour être délivré, sinon chasseur. 2ᵉ capture = chasseur</li>
+          <li>Fugitif attrapé (scan de son QR) = il devient chasseur</li>
+          {c.shrink_enabled && <li>La zone rétrécit de {c.shrink_m} m toutes les {c.shrink_every_min} min</li>}
+          <li>Pouvoirs des chasseurs : {REVEAL_S} s</li>
           <li>Le dernier fugitif libre gagne</li>
         </ul>
       </div>

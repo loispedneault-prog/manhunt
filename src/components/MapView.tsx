@@ -1,7 +1,7 @@
 import L from 'leaflet'
 import 'leaflet/dist/leaflet.css'
 import { useEffect, useRef } from 'react'
-import type { LatLng, Prison } from '../lib/types'
+import type { LatLng } from '../lib/types'
 
 export type Tone = 'me' | 'hunter' | 'fugitive' | 'jailed' | 'alert'
 
@@ -27,8 +27,9 @@ export interface MapChallenge {
 
 interface Props {
   zone?: LatLng[]
+  /** Upcoming (shrunk) zone, drawn as a dashed outline. */
+  nextZone?: LatLng[] | null
   drawing?: boolean
-  prison?: Prison | null
   challenges?: MapChallenge[]
   markers?: MapMarker[]
   accuracy?: { lat: number; lng: number; acc: number } | null
@@ -61,7 +62,7 @@ function markerHtml(m: MapMarker) {
 export function MapView(props: Props) {
   const el = useRef<HTMLDivElement>(null)
   const map = useRef<L.Map | null>(null)
-  const layers = useRef<{ zone: L.LayerGroup; prison: L.LayerGroup; ch: L.LayerGroup; mk: L.LayerGroup; acc: L.LayerGroup } | null>(null)
+  const layers = useRef<{ zone: L.LayerGroup; ch: L.LayerGroup; mk: L.LayerGroup; acc: L.LayerGroup } | null>(null)
   const markerCache = useRef(new Map<string, { m: L.Marker; html: string }>())
   const cbs = useRef(props)
   cbs.current = props
@@ -82,7 +83,6 @@ export function MapView(props: Props) {
     }).addTo(m)
     layers.current = {
       zone: L.layerGroup().addTo(m),
-      prison: L.layerGroup().addTo(m),
       ch: L.layerGroup().addTo(m),
       acc: L.layerGroup().addTo(m),
       mk: L.layerGroup().addTo(m),
@@ -102,7 +102,7 @@ export function MapView(props: Props) {
   }, [])
 
   // Zone: everything outside is painted red.
-  const zoneKey = JSON.stringify(props.zone ?? []) + (props.drawing ? 'd' : '')
+  const zoneKey = JSON.stringify(props.zone ?? []) + JSON.stringify(props.nextZone ?? null) + (props.drawing ? 'd' : '')
   useEffect(() => {
     const g = layers.current?.zone
     if (!g) return
@@ -114,6 +114,10 @@ export function MapView(props: Props) {
     } else if (z.length === 2) {
       L.polyline(z, { color: RED, weight: 2, dashArray: '6 6', interactive: false }).addTo(g)
     }
+    const nz = props.nextZone
+    if (nz && nz.length >= 3) {
+      L.polygon(nz, { color: AMBER, weight: 2, opacity: 0.9, dashArray: '3 7', fill: false, interactive: false }).addTo(g)
+    }
     if (props.drawing) {
       z.forEach((p, i) =>
         L.circleMarker(p, { radius: i === z.length - 1 ? 7 : 5, color: '#fff', weight: 2, fillColor: RED, fillOpacity: 1, interactive: false }).addTo(g),
@@ -121,21 +125,6 @@ export function MapView(props: Props) {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [zoneKey])
-
-  const prisonKey = JSON.stringify(props.prison ?? null)
-  useEffect(() => {
-    const g = layers.current?.prison
-    if (!g) return
-    g.clearLayers()
-    const p = props.prison
-    if (!p) return
-    L.circle([p.lat, p.lng], { radius: p.radius, color: AMBER, weight: 2, dashArray: '4 6', fillColor: AMBER, fillOpacity: 0.12, interactive: false }).addTo(g)
-    L.marker([p.lat, p.lng], {
-      interactive: false,
-      icon: L.divIcon({ className: 'mk-wrap', html: '<div class="prison-lbl">PRISON</div>', iconSize: [70, 20], iconAnchor: [35, 10] }),
-    }).addTo(g)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [prisonKey])
 
   const chKey = JSON.stringify(props.challenges ?? [])
   useEffect(() => {

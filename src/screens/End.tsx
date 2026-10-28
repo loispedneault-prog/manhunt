@@ -55,9 +55,9 @@ export function End({ game, players, profile, onLeave }: { game: Game; players: 
         {fugitives.map(({ p, survived }, i) => (
           <div key={p.id} className="prow">
             <b className="mono rank">{i + 1}</b>
-            <Avatar url={p.avatar_url} name={p.name} size={36} tone={p.status === 'hunter' ? 'hunter' : p.status === 'jailed' ? 'jailed' : 'fugitive'} />
+            <Avatar url={p.avatar_url} name={p.name} size={36} tone={p.status === 'hunter' ? 'hunter' : 'fugitive'} />
             <span className="pname">{p.name}</span>
-            <span className="mono dim">{p.status === 'hunter' ? 'pris' : p.status === 'jailed' ? 'prison' : 'libre'}</span>
+            <span className="mono dim">{p.status === 'hunter' ? 'éliminé' : 'libre'}</span>
             <span className="mono">{fmt(survived)}</span>
           </div>
         ))}

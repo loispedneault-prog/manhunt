@@ -257,7 +257,6 @@ textarea.input { font-size: 16px; line-height: 1.35; padding: 8px 10px; resize: 
 .ch span { transform: rotate(-45deg); font-family: var(--mono); font-weight: 700; font-size: 11px; color: var(--amber); }
 .ch.done { border-color: #444; box-shadow: none; }
 .ch.done span { color: #555; text-decoration: line-through; }
-.prison-lbl { font-family: var(--head); font-size: 11px; letter-spacing: 0.2em; color: var(--amber); border: 1px solid var(--amber); background: #000; padding: 2px 6px; text-align: center; }
 
 /* ---------- game ---------- */
 .game { position: fixed; inset: 0; overflow: hidden; }
@@ -365,3 +364,5 @@ textarea.input { font-size: 16px; line-height: 1.35; padding: 8px 10px; resize: 
 .ch-row small { color: var(--mute); font-size: 11px; }
 .ch-row.done { opacity: 0.45; }
 .ch-actions { display: flex; flex-direction: column; gap: 4px; }
+.hud-mid .zone-t { color: var(--amber); }
+.btn.qr-btn { border-color: var(--red); color: #fff; }

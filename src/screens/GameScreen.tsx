@@ -5,11 +5,11 @@ import { QrCode } from '../components/QrCode'
 import { QrScanner } from '../components/QrScanner'
 import { Avatar, Modal, Toasts, type Toast } from '../components/ui'
 import { playVoice, sfx, startRecording, unlockAudio, vibrate, type Recording } from '../lib/audio'
-import { distM, fmtDist, inZone } from '../lib/geo'
+import { distM, fmtDist, inZone, shrinkZone } from '../lib/geo'
 import { SIM, shortCode, type Profile } from '../lib/profile'
 import { rpc, sb, uploadMedia } from '../lib/supabase'
 import { fmt, gameMs, minMs, now } from '../lib/time'
-import { POWER_LABEL, type Game, type GameEvent, type Player, type PowerKey } from '../lib/types'
+import { POWER_LABEL, REVEAL_S, type Game, type GameEvent, type Player, type PowerKey } from '../lib/types'
 import type { GameData } from '../lib/useGame'
 import { useGeo } from '../lib/useGeo'
 
@@ -17,17 +17,15 @@ const MSG: Record<string, string> = {
   not_running: 'La partie n’est pas en cours',
   paused: 'Partie en pause',
   headstart: 'Attends la fin de l’avance des fugitifs',
-  not_hunter: 'Seuls les chasseurs peuvent capturer',
+  not_hunter: 'Seuls les chasseurs peuvent éliminer',
   unknown: 'Joueur introuvable',
-  not_free: 'Ce joueur n’est pas libre',
+  not_free: 'Ce joueur est déjà chasseur',
   none_left: 'Plus de charges',
   wrong_role: 'Pas disponible pour ton rôle',
   already_active: 'Brouillage déjà prêt pour le prochain ping',
   too_far: 'Trop loin',
   no_position: 'Pas de position GPS récente — attends le signal',
   taken: 'Déjà accompli par quelqu’un',
-  jailed: 'Impossible en prison',
-  empty: 'Personne en prison',
   bad_reward: 'Récompense invalide',
   error: 'Erreur serveur — réessaie',
   network: 'Pas de réseau — réessaie',
@@ -58,18 +56,27 @@ export function GameScreen({ data, game, me, onLeave }: Props) {
   const hs = minMs(cfg.headstart_min)
   const dur = minMs(cfg.duration_min)
   const iv = minMs(cfg.ping_min)
-  const jailMs = minMs(cfg.jail_min)
   const headstart = gms < hs
   const paused = !!game.paused_at
   const isHost = game.host_id === me.id
   const isHunter = me.status === 'hunter'
-  const isJailed = me.status === 'jailed'
   const channel = isHunter ? 'hunter' : 'fugitive'
   const nextPing = headstart ? hs + iv - gms : iv - ((gms - hs) % iv)
   const remaining = dur - gms
   const pw = me.powers ?? {}
   const byId = useMemo(() => new Map(players.map(p => [p.id, p])), [players])
   const nameOf = (id: string | null) => (id && byId.get(id)?.name) || '???'
+
+  // Zone shrink: the server moves game.zone; here we only preview the next outline and count down.
+  const shrinkOn = !!cfg.shrink_enabled && cfg.shrink_every_min > 0 && cfg.shrink_m > 0
+  const nextZone = useMemo(() => {
+    if (!shrinkOn) return null
+    const base = game.base_zone ?? game.zone
+    const cur = shrinkZone(base, game.shrink_step * cfg.shrink_m)
+    const nxt = shrinkZone(base, (game.shrink_step + 1) * cfg.shrink_m)
+    return JSON.stringify(cur) === JSON.stringify(nxt) ? null : nxt // minimum size reached
+  }, [shrinkOn, game.base_zone, game.zone, game.shrink_step, cfg.shrink_m])
+  const nextShrinkIn = nextZone ? Math.max(0, hs + (game.shrink_step + 1) * minMs(cfg.shrink_every_min) - gms) : null
 
   const activeReveals = events.filter(e => e.type === 'reveal' && Number(e.data.until_ms) > gms)
   const publicReveals = activeReveals.filter(e => !e.data.secret)
@@ -118,8 +125,9 @@ export function GameScreen({ data, game, me, onLeave }: Props) {
   const geo = useGeo(game.id, me.id, true)
   const myPos = geo.pos ?? (me.lat != null && me.lng != null ? { lat: me.lat, lng: me.lng, acc: me.acc ?? 30, at: 0 } : null)
   const meOut = !!myPos && !inZone(game.zone, myPos.lat, myPos.lng)
+  const meOutNext = !!myPos && !!nextZone && !inZone(nextZone, myPos.lat, myPos.lng)
 
-  // ---------- server tick (jail timeouts, pings, end of game) ----------
+  // ---------- server tick (pings, zone shrink, end of game) ----------
   useEffect(() => {
     const run = () => {
       if (document.visibilityState === 'visible') void rpc('tick', { p_game: game.id })
@@ -164,31 +172,26 @@ export function GameScreen({ data, game, me, onLeave }: Props) {
         vibrate([200, 100, 200])
         toast('PING — toutes les positions sont révélées', 'red')
         break
-      case 'capture': {
+      case 'capture':
         sfx.capture()
         vibrate(400)
-        const jailed = e.data.result === 'jailed'
-        if (e.target === me.id) toast(jailed ? 'TU ES CAPTURÉ — VA EN PRISON' : 'PRIS UNE 2ᵉ FOIS — TU DEVIENS CHASSEUR', 'red', 9000)
-        else toast(jailed ? `${nameOf(e.actor)} a capturé ${nameOf(e.target)} → prison` : `${nameOf(e.target)} est pris une 2ᵉ fois → chasseur`, 'red')
+        if (e.target === me.id) toast('TU AS ÉTÉ ÉLIMINÉ — TU ES MAINTENANT CHASSEUR', 'red', 9000)
+        else toast(`${nameOf(e.actor)} a éliminé ${nameOf(e.target)} → chasseur`, 'red')
         break
-      }
-      case 'jail_timeout':
-        if (e.target === me.id) toast('Personne n’est venu… TU DEVIENS CHASSEUR', 'red', 9000)
-        else toast(`${nameOf(e.target)} rejoint les chasseurs`, 'red')
-        break
-      case 'freed':
-        sfx.good()
-        toast(`${nameOf(e.actor)} a délivré ${e.data.count} prisonnier${e.data.count > 1 ? 's' : ''} !`, 'green', 6000)
+      case 'shrink':
+        sfx.siren()
+        vibrate([300, 100, 300])
+        toast('LA ZONE A RÉTRÉCI', 'amber', 6000)
         break
       case 'reveal':
         if (e.data.secret) {
-          if (isHunter) toast(`${nameOf(e.actor)} : révélation secrète (30 s)`, 'blue')
+          if (isHunter) toast(`${nameOf(e.actor)} : révélation secrète (${REVEAL_S} s)`, 'blue')
         } else if (isHunter) {
-          toast(`${nameOf(e.actor)} révèle les fugitifs (30 s)`, 'blue')
+          toast(`${nameOf(e.actor)} révèle les fugitifs (${REVEAL_S} s)`, 'blue')
         } else {
           sfx.alarm()
           vibrate([500, 200, 500])
-          toast('LES CHASSEURS VOIENT TA POSITION — 30 s', 'red', 6000)
+          toast(`LES CHASSEURS VOIENT TA POSITION — ${REVEAL_S} s`, 'red', 6000)
         }
         break
       case 'scramble':
@@ -224,10 +227,21 @@ export function GameScreen({ data, game, me, onLeave }: Props) {
         }
         break
       case 'capture_deny':
-        if (e.target === me.id) toast(`${nameOf(e.actor)} conteste la capture`, 'amber')
+        if (e.target === me.id) toast(`${nameOf(e.actor)} conteste l’élimination`, 'amber')
         break
     }
   }
+
+  // Warn once per shrink when it's a minute away.
+  const warnedStep = useRef(-1)
+  useEffect(() => {
+    if (nextShrinkIn == null || paused || headstart) return
+    if (nextShrinkIn <= 60000 && warnedStep.current !== game.shrink_step) {
+      warnedStep.current = game.shrink_step
+      if (entered) sfx.alarm()
+      toast('La zone rétrécit dans 1 minute', 'amber', 6000)
+    }
+  }, [nextShrinkIn, game.shrink_step, paused, headstart, entered, toast])
 
   // ---------- map markers: who sees whom ----------
   const markers: MapMarker[] = []
@@ -238,7 +252,7 @@ export function GameScreen({ data, game, me, onLeave }: Props) {
     }
     const hasPos = p.lat != null && p.lng != null
     const out = hasPos && !inZone(game.zone, p.lat!, p.lng!)
-    const tone = p.status === 'hunter' ? 'hunter' : p.status === 'jailed' ? 'jailed' : 'fugitive'
+    const tone = p.status === 'hunter' ? 'hunter' : 'fugitive'
     const staleS = p.pos_at ? Math.round((now() - Date.parse(p.pos_at)) / 1000) : 999
     const live =
       hasPos &&
@@ -263,7 +277,7 @@ export function GameScreen({ data, game, me, onLeave }: Props) {
           lng: pp.lng,
           name: p.name,
           avatar: p.avatar_url,
-          tone: pp.status === 'hunter' ? 'hunter' : pp.status === 'jailed' ? 'jailed' : 'fugitive',
+          tone: pp.status === 'hunter' ? 'hunter' : 'fugitive',
           ghost: true,
           sub: `ping · ${minutesAgo(ping!.created_at)} min`,
         })
@@ -274,13 +288,6 @@ export function GameScreen({ data, game, me, onLeave }: Props) {
   const claimMap = new Map(claims.map(c => [c.challenge_id, c.player_id]))
   const mapChallenges = game.challenges.map((c, i) => ({ id: c.id, lat: c.lat, lng: c.lng, label: String(i + 1).padStart(2, '0'), done: claimMap.has(c.id) }))
   const openChallenges = game.challenges.filter(c => !claimMap.has(c.id)).length
-
-  // ---------- prison ----------
-  const prisoners = players.filter(p => p.status === 'jailed')
-  const distPrison = myPos ? distM(myPos.lat, myPos.lng, game.prison.lat, game.prison.lng) : null
-  const prisonReach = game.prison.radius + Math.min(myPos?.acc ?? 0, 20)
-  const canFree = me.status === 'free' && prisoners.length > 0 && distPrison != null && distPrison <= prisonReach
-  const jailLeft = isJailed && me.jailed_ms != null ? me.jailed_ms + jailMs - gms : 0
 
   // ---------- UI state ----------
   const [focus, setFocus] = useState<{ lat: number; lng: number; key: number } | null>(null)
@@ -295,12 +302,17 @@ export function GameScreen({ data, game, me, onLeave }: Props) {
   const answered = useRef(new Set<number>())
   const [, bumpAnswered] = useState(0)
 
+  // A fugitive who just got eliminated must not keep the QR or capture prompt open.
+  useEffect(() => {
+    if (isHunter) setCodeOpen(false)
+  }, [isHunter])
+
   const act = async (key: string, fn: () => Promise<string>) => {
     if (busy) return 'busy'
     setBusy(key)
     const r = await fn()
     setBusy(null)
-    if (!['ok', 'jailed', 'converted'].includes(r)) toast(MSG[r] ?? 'Erreur — réessaie', 'amber')
+    if (!['ok', 'converted'].includes(r)) toast(MSG[r] ?? 'Erreur — réessaie', 'amber')
     return r
   }
 
@@ -314,7 +326,6 @@ export function GameScreen({ data, game, me, onLeave }: Props) {
     const { error } = await sb.from('events').insert({ game_id: game.id, type: 'capture_req', actor: me.id, target: targetId })
     toast(error ? MSG.network : `Demande envoyée à ${nameOf(targetId)} — il doit confirmer`, error ? 'amber' : 'blue')
   }
-  const freePrisoners = () => act('free', () => rpc('free_prisoners', { p_game: game.id, p_by: me.id }))
   const claim = (chId: string, reward: PowerKey) => {
     setRewardFor(null)
     void act('claim', () => rpc('claim_challenge', { p_game: game.id, p_by: me.id, p_challenge: chId, p_reward: reward }))
@@ -327,7 +338,7 @@ export function GameScreen({ data, game, me, onLeave }: Props) {
     if (r !== 'ok') toast(MSG[r] ?? 'SOS non envoyé — réessaie !', 'red')
   }
 
-  // Capture requests waiting for MY confirmation.
+  // Elimination requests waiting for MY confirmation.
   const pendingReq =
     me.status === 'free'
       ? events.findLast(
@@ -344,7 +355,7 @@ export function GameScreen({ data, game, me, onLeave }: Props) {
     bumpAnswered(x => x + 1)
     if (accept) {
       const r = await rpc('capture_player', { p_game: game.id, p_target: me.id, p_by: req.actor })
-      if (!['jailed', 'converted'].includes(r)) toast(MSG[r] ?? 'Erreur', 'amber')
+      if (r !== 'converted') toast(MSG[r] ?? 'Erreur', 'amber')
     } else {
       await sb.from('events').insert({ game_id: game.id, type: 'capture_deny', actor: me.id, target: req.actor, data: { req: req.id } })
     }
@@ -353,14 +364,14 @@ export function GameScreen({ data, game, me, onLeave }: Props) {
   const recenter = () => myPos && setFocus({ lat: myPos.lat, lng: myPos.lng, key: Date.now() })
 
   // ---------- render ----------
-  const roleLabel = isHunter ? 'Chasseur' : isJailed ? 'Prisonnier' : 'Fugitif'
-  const roleCls = isHunter ? 'hunter' : isJailed ? 'jailed' : 'fugitive'
+  const roleLabel = isHunter ? 'Chasseur' : 'Fugitif'
+  const roleCls = isHunter ? 'hunter' : 'fugitive'
 
   return (
     <div className={`game role-${roleCls} ${meOut ? 'is-out' : ''} ${sosActive ? 'is-sos' : ''}`}>
       <MapView
         zone={game.zone}
-        prison={game.prison}
+        nextZone={nextZone}
         challenges={mapChallenges}
         markers={markers}
         accuracy={myPos}
@@ -379,6 +390,9 @@ export function GameScreen({ data, game, me, onLeave }: Props) {
         <div className="hud-mid">
           <b className="mono timer">{fmt(remaining)}</b>
           <small className={`mono ${secToPing <= 10 ? 'blink' : ''}`}>PING {fmt(nextPing)}</small>
+          {nextShrinkIn != null && (
+            <small className={`mono zone-t ${nextShrinkIn <= 60000 ? 'blink' : ''}`}>ZONE {fmt(nextShrinkIn)}</small>
+          )}
         </div>
         <button className="sos-btn" onClick={() => setSosConfirm(true)}>SOS</button>
         <button className="menu-btn" onClick={() => setMenuOpen(true)} aria-label="Menu">☰</button>
@@ -410,17 +424,15 @@ export function GameScreen({ data, game, me, onLeave }: Props) {
         )}
         {headstart && !isHunter && <div className="banner red">FUIS ! Les chasseurs partent dans {fmt(hs - gms)}</div>}
         {meOut && <div className="banner red flash">HORS ZONE — ta position est visible en direct</div>}
-        {!isHunter && publicLeft > 0 && <div className="banner red flash">Les chasseurs te voient — {Math.ceil(publicLeft / 1000)} s</div>}
-        {isHunter && revealLeft > 0 && <div className="banner blue">Révélation active — {Math.ceil(revealLeft / 1000)} s</div>}
-        {isJailed && (
-          <div className="banner jailed">
-            EN PRISON — chasseur dans {fmt(jailLeft)}
-            <small>
-              {distPrison != null && distPrison > game.prison.radius ? `Rends-toi à la prison (${fmtDist(distPrison)})` : 'Attends qu’un fugitif vienne te délivrer'}
-            </small>
+        {!meOut && meOutNext && nextShrinkIn != null && nextShrinkIn <= 120000 && (
+          <div className="banner amber flash">
+            La zone rétrécit dans {fmt(nextShrinkIn)}
+            <small>Tu seras dehors : rapproche-toi du centre (pointillé jaune)</small>
           </div>
         )}
-        {!isHunter && !isJailed && me.scramble_ping != null && <div className="banner blue">Brouillage prêt pour le prochain ping</div>}
+        {!isHunter && publicLeft > 0 && <div className="banner red flash">Les chasseurs te voient — {Math.ceil(publicLeft / 1000)} s</div>}
+        {isHunter && revealLeft > 0 && <div className="banner blue">Révélation active — {Math.ceil(revealLeft / 1000)} s</div>}
+        {!isHunter && me.scramble_ping != null && <div className="banner blue">Brouillage prêt pour le prochain ping</div>}
       </div>
 
       <Toasts items={toasts} />
@@ -432,33 +444,23 @@ export function GameScreen({ data, game, me, onLeave }: Props) {
           {isHunter ? (
             <>
               <button className="btn primary act" disabled={headstart || paused} onClick={() => setCaptureOpen(true)}>
-                Capturer
+                Éliminer
               </button>
               <button className="btn act" disabled={!pw.reveal_public || headstart || paused || !!busy} onClick={() => void firePower('reveal_public')}>
-                Révéler<small>×{pw.reveal_public ?? 0} · avertit</small>
+                Révéler<small>×{pw.reveal_public ?? 0} · {REVEAL_S} s · avertit</small>
               </button>
               <button className="btn act" disabled={!pw.reveal_secret || headstart || paused || !!busy} onClick={() => void firePower('reveal_secret')}>
-                En secret<small>×{pw.reveal_secret ?? 0} · invisible</small>
+                En secret<small>×{pw.reveal_secret ?? 0} · {REVEAL_S} s · invisible</small>
               </button>
             </>
-          ) : isJailed ? (
-            <div className="jail-info mono">
-              {prisoners.length} prisonnier{prisoners.length > 1 ? 's' : ''} · un fugitif libre doit entrer dans la prison
-            </div>
           ) : (
             <>
-              <button className="btn act" onClick={() => setCodeOpen(true)}>Mon code</button>
+              <button className="btn act qr-btn" onClick={() => setCodeOpen(true)}>
+                Mon QR<small>code d’élimination</small>
+              </button>
               <button className="btn act" disabled={!pw.scramble || me.scramble_ping != null || paused || !!busy} onClick={() => void firePower('scramble')}>
                 Brouiller<small>×{pw.scramble ?? 0} · prochain ping</small>
               </button>
-              {prisoners.length > 0 && (
-                <button className={`btn act ${canFree ? 'primary pulse' : ''}`} disabled={!canFree || paused || !!busy} onClick={() => void freePrisoners()}>
-                  Délivrer
-                  <small>
-                    {canFree ? `${prisoners.length} prisonnier${prisoners.length > 1 ? 's' : ''}` : distPrison != null ? `prison à ${fmtDist(Math.max(0, distPrison - game.prison.radius))}` : '—'}
-                  </small>
-                </button>
-              )}
             </>
           )}
         </div>
@@ -484,7 +486,7 @@ export function GameScreen({ data, game, me, onLeave }: Props) {
             <small>Tu es</small>
             <b className="glitch" data-text={roleLabel.toUpperCase()}>{roleLabel.toUpperCase()}</b>
           </div>
-          <p>{isHunter ? 'Traque-les. Personne ne s’échappe.' : isJailed ? 'Prie pour qu’on vienne te chercher.' : 'Cours. Cache-toi. Survis.'}</p>
+          <p>{isHunter ? 'Traque-les. Scanne leur QR. Personne ne s’échappe.' : 'Cours. Cache-toi. Survis.'}</p>
           <button className="btn primary big">Entrer dans la chasse</button>
           <small className="dim">Garde l’écran allumé · son activé · mode silencieux désactivé</small>
         </div>
@@ -492,8 +494,9 @@ export function GameScreen({ data, game, me, onLeave }: Props) {
 
       {/* ---------- modals ---------- */}
       {pendingReq && (
-        <Modal title="Capture" tone="red">
+        <Modal title="Élimination" tone="red">
           <p className="big-msg">{nameOf(pendingReq.actor)} dit t’avoir attrapé.</p>
+          <p className="hint">Si tu confirmes, tu deviens chasseur.</p>
           <div className="row">
             <button className="btn primary big" onClick={() => void answerReq(pendingReq, true)}>Oui, je suis pris</button>
             <button className="btn big" onClick={() => void answerReq(pendingReq, false)}>Non</button>
@@ -512,13 +515,14 @@ export function GameScreen({ data, game, me, onLeave }: Props) {
         />
       )}
 
-      {codeOpen && (
-        <Modal title="Mon code" onClose={() => setCodeOpen(false)}>
-          <p className="hint">Montre ce code au chasseur qui t’a attrapé.</p>
+      {codeOpen && !isHunter && (
+        <Modal title="Code d’élimination" tone="red" onClose={() => setCodeOpen(false)}>
+          <p className="hint">Si un chasseur t’attrape, il scanne ce code : tu deviens chasseur.</p>
           <div className="qr-wrap">
             <QrCode text={QR_PREFIX + me.id} />
           </div>
           <b className="code">{shortCode(me.id)}</b>
+          <p className="hint">Code de secours si la caméra ne marche pas.</p>
         </Modal>
       )}
 
@@ -530,18 +534,22 @@ export function GameScreen({ data, game, me, onLeave }: Props) {
               const by = claimMap.get(c.id)
               const d = myPos ? distM(myPos.lat, myPos.lng, c.lat, c.lng) : null
               const near = d != null && d <= 40 + Math.min(myPos?.acc ?? 0, 20)
+              const outside = !inZone(game.zone, c.lat, c.lng)
               return (
                 <div key={c.id} className={`ch-row ${by ? 'done' : ''}`}>
                   <b className="mono">{String(i + 1).padStart(2, '0')}</b>
                   <div className="ch-text">
                     <p>{c.text}</p>
-                    <small className="mono">{by ? `Accompli par ${nameOf(by)}` : d != null ? fmtDist(d) : 'position inconnue'}</small>
+                    <small className="mono">
+                      {by ? `Accompli par ${nameOf(by)}` : d != null ? fmtDist(d) : 'position inconnue'}
+                      {!by && outside ? ' · hors zone !' : ''}
+                    </small>
                   </div>
                   <div className="ch-actions">
                     {!by && (
                       <button
                         className={`btn sm ${near ? 'primary' : ''}`}
-                        disabled={!near || isJailed || headstart || paused || !!busy}
+                        disabled={!near || headstart || paused || !!busy}
                         onClick={() => (isHunter ? setRewardFor(c.id) : claim(c.id, 'scramble'))}
                       >
                         {near ? 'Accompli' : 'Trop loin'}
@@ -590,11 +598,9 @@ export function GameScreen({ data, game, me, onLeave }: Props) {
               .sort((a, b) => order(a) - order(b) || a.name.localeCompare(b.name))
               .map(p => (
                 <div key={p.id} className="prow">
-                  <Avatar url={p.avatar_url} name={p.name} size={34} tone={p.status === 'hunter' ? 'hunter' : p.status === 'jailed' ? 'jailed' : 'fugitive'} />
+                  <Avatar url={p.avatar_url} name={p.name} size={34} tone={p.status === 'hunter' ? 'hunter' : 'fugitive'} />
                   <span className="pname">{p.name}{p.id === me.id && <em> · toi</em>}</span>
-                  <span className="mono dim">
-                    {p.status === 'hunter' ? `chasseur · ${p.captures} cap.` : p.status === 'jailed' ? 'prison' : 'libre'}
-                  </span>
+                  <span className="mono dim">{p.status === 'hunter' ? `chasseur · ${p.captures} élim.` : 'libre'}</span>
                 </div>
               ))}
           </div>
@@ -630,7 +636,7 @@ export function GameScreen({ data, game, me, onLeave }: Props) {
   )
 }
 
-const order = (p: Player) => (p.status === 'free' ? 0 : p.status === 'jailed' ? 1 : 2)
+const order = (p: Player) => (p.status === 'free' ? 0 : 1)
 
 function CaptureModal({
   game, players, onClose, onCapture, onDeclare, onBadQr,
@@ -658,13 +664,18 @@ function CaptureModal({
   const byCode = free.find(p => shortCode(p.id) === code.toUpperCase())
 
   return (
-    <Modal title="Capturer" tone="red" onClose={onClose}>
+    <Modal title="Éliminer" tone="red" onClose={onClose}>
       <div className="seg">
         {tabs.map(t => (
           <button key={t.k} className={tab === t.k ? 'on' : ''} onClick={() => setTab(t.k)}>{t.l}</button>
         ))}
       </div>
-      {tab === 'scan' && <QrScanner onResult={onScan} />}
+      {tab === 'scan' && (
+        <>
+          <QrScanner onResult={onScan} />
+          <p className="hint">Vise le QR « code d’élimination » sur le téléphone du fugitif.</p>
+        </>
+      )}
       {tab === 'code' && (
         <>
           <input
@@ -677,7 +688,7 @@ function CaptureModal({
             onChange={e => setCode(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, ''))}
           />
           <button className="btn primary big" disabled={!byCode} onClick={() => byCode && onCapture(byCode.id)}>
-            {byCode ? `Capturer ${byCode.name}` : code.length === 4 ? 'Code inconnu' : 'Entre le code du fugitif'}
+            {byCode ? `Éliminer ${byCode.name}` : code.length === 4 ? 'Code inconnu' : 'Entre le code du fugitif'}
           </button>
         </>
       )}

@@ -7,8 +7,10 @@ export interface Config {
   duration_min: number
   headstart_min: number
   ping_min: number
-  jail_min: number
   hunters: number
+  shrink_enabled: boolean
+  shrink_every_min: number
+  shrink_m: number
   capture_qr: boolean
   capture_declare: boolean
   pw_reveal_public: number
@@ -24,12 +26,6 @@ export interface Challenge {
   text: string
 }
 
-export interface Prison {
-  lat: number
-  lng: number
-  radius: number
-}
-
 export interface Game {
   id: string
   code: string
@@ -37,7 +33,8 @@ export interface Game {
   status: 'lobby' | 'running' | 'ended'
   config: Config
   zone: LatLng[]
-  prison: Prison
+  base_zone: LatLng[] | null
+  shrink_step: number
   challenges: Challenge[]
   started_at: string | null
   paused_at: string | null
@@ -101,6 +98,9 @@ export interface GameEvent {
   created_at: string
 }
 
+/** Must match the 15000 ms in public.use_power. */
+export const REVEAL_S = 15
+
 export const POWER_LABEL: Record<PowerKey, string> = {
   reveal_public: 'Révélation',
   reveal_secret: 'Révélation secrète',
@@ -111,8 +111,10 @@ export const DEFAULT_CONFIG: Config = {
   duration_min: 90,
   headstart_min: 5,
   ping_min: 10,
-  jail_min: 10,
   hunters: 2,
+  shrink_enabled: false,
+  shrink_every_min: 10,
+  shrink_m: 50,
   capture_qr: true,
   capture_declare: true,
   pw_reveal_public: 2,
